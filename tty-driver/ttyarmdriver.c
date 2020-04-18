@@ -1,11 +1,9 @@
 /**
- * @file    hello.c
+ * @file    ttyarmdriver.c
  * @author  PHAM Minh Thuc
  * @date    7 April 2020
  * @version 0.1
- * @brief  An introductory "Hello World!" loadable kernel module (LKM) that can display a message
- * in the /var/log/message file when the module is loaded and removed. The module can accept an
- * argument when it is loaded -- the name, which appears in the kernel log files.
+ * @brief 	a simple tty driver allows to replace the bras robotique ALD5 in the period of confinement.  
 */
 
 #include <linux/console.h>

@@ -1,11 +1,10 @@
 /**
- * @file    hello.c
+ * @file    raspchar.c
  * @author  PHAM Minh Thuc
  * @date    7 April 2020
  * @version 0.1
- * @brief  An introductory "Hello World!" loadable kernel module (LKM) that can display a message
- * in the /var/log/message file when the module is loaded and removed. The module can accept an
- * argument when it is loaded -- the name, which appears in the kernel log files.
+ * @brief   a character driver allows programme in user space read/write to a device virtual. 
+ * The programme in user space can communicate with device file in /dev and the module in kernel space can receive data and send it to device.
 */
 
 #include <linux/init.h>             // Macros used to mark up functions e.g., __init __exit
@@ -22,22 +21,29 @@
 #define TINY_TTY_MAJOR 240
 #define TINY_TTY_MINOR  225
 
+/**********************************************Some informations about developpement driver kernel************************************************************/
 // inode is the structure for file disk (fd). When we call open file system in user space, it return a fd.
-// struct file is tha data structure used in device driver. It represents an open file. Open file
+
+// struct file is the data structure used in device driver. It represents an open file. Open file
 // is created in kernel space and passed to any function that operates on the file until close.
-// the difference between strict inode and struct file is that an inode does not track the current position
+
+// the difference between struct inode and struct file is that an inode does not track the current position
 // within the file or the current mode. It only contains stuff that helps the OS find the contents of the underlying file structure (pipe, directory, regular disk file, block/character device file)
 // struct file contains pointer to struct inode and also...
+
 // if read device file:
 // Block device : like device storage and memory. Data in block can be cached in memory and read back from cache. writes can be buffered
 // character device : like pipes, serial ports. Write and reading to them is an immediate action. Writing a byte to a character device might cause it to be displayed on screen, output on a serial port, converted into a sound, ... Reading a byte from a device might cause the serial port to wait for input, might return a random byte
+
 // if read regular file:
 // regular file like file exutable, text ... : the data is handled by a filesystem driver. 
 
-// Driver is in the below and user can access driver through file device in file system.
-// Driver handles the operations and device file is the interface for communication.
+// Driver handles the operations and device file is the interface for communication (udev).
+
 // To add permission for device file. this helps some group or user have the permission to do the operations on this device file and also protect file system
-// In /etc/udev/rules.d Add a rules for driver with KERNEL, SUBSYSTEM and MODE 
+// In /etc/udev/rules.d Add a rules for driver with KERNEL, SUBSYSTEM and MODE or the other priorities of device connected.
+/*****************************************************************the end***************************************************************************************/ 
+
 MODULE_LICENSE("GPL");              ///< The license type -- this affects runtime behavior
 MODULE_AUTHOR("PHAM Minh Thuc");      ///< The author -- visible when you use modinfo
 MODULE_DESCRIPTION("Simple driver replace arm ALD5");  ///< The description -- see modinfo
