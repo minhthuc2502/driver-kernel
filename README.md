@@ -1,9 +1,10 @@
 # Description
-Character driver in kernel space attaches a device file. This device file can beused in user space to open, read and write to a virtual device and close.
+Character driver and TTY driver in kernel space attaches a device file. This device file can beused in user space to open, read and write to a virtual device and close.
 
 # Add module driver to kernel
+This Makefile is used to build kernel module in yocto. If you build directly the module driver, add another Makefile and: 
 - Compile module driver : `make` to receive a file .ko
-- Add module to kernel : `insmod [filename].ko`
+- Add module to kernel : `insmod [filename].ko
 - Using call system in userspace to accès device file in /dev/raspchar
 - Remove module from kernel : `rmmod [filename].ko`
 
