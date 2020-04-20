@@ -1,10 +1,11 @@
 /**
- * @file    raspchar.c
+ * @file    hello.c
  * @author  PHAM Minh Thuc
  * @date    7 April 2020
  * @version 0.1
- * @brief   a character driver allows programme in user space read/write to a device virtual. 
- * The programme in user space can communicate with device file in /dev and the module in kernel space can receive data and send it to device.
+ * @brief  An introductory "Hello World!" loadable kernel module (LKM) that can display a message
+ * in the /var/log/message file when the module is loaded and removed. The module can accept an
+ * argument when it is loaded -- the name, which appears in the kernel log files.
 */
 
 #include <linux/init.h>             // Macros used to mark up functions e.g., __init __exit
@@ -15,42 +16,48 @@
 #include <linux/uaccess.h>          // Required for the copy to user function
 #include <linux/mutex.h>            // Required for the mutex functionality
 #include <linux/slab.h>             // Use for KMalloc, KFree
+#include <linux/ioctl.h>            // Use for entry point ioctl
+#include <linux/proc_fs.h>           // create file system in /proc
+#include <linux/seq_file.h>
 #include "raspchar.h"
+
 #define DEVICE_NAME "raspberrychar"
 #define CLASS_NAME  "rasp"
-#define TINY_TTY_MAJOR 240
-#define TINY_TTY_MINOR  225
+#define MAGICAL_NUMBER 240
+#define RCHAR_CLR_DATA_REGS _IO(MAGICAL_NUMBER, 0)
+#define RCHAR_GET_STS_REGS  _IOR(MAGICAL_NUMBER, 1, sts_reg_t *)
+#define RCHAR_RD_DATA_REGS  _IOR(MAGICAL_NUMBER, 2, unsigned char *)
+#define RCHAR_WR_DATA_REGS  _IOW(MAGICAL_NUMBER, 3, unsigned char *)
 
-/**********************************************Some informations about developpement driver kernel************************************************************/
+typedef struct {
+   unsigned char read_count_h_reg;
+   unsigned char read_count_l_reg;
+   unsigned char write_count_h_reg;
+   unsigned char write_count_l_reg;
+   unsigned char device_status_reg;
+} sts_reg_t;
+
 // inode is the structure for file disk (fd). When we call open file system in user space, it return a fd.
-
-// struct file is the data structure used in device driver. It represents an open file. Open file
+// struct file is tha data structure used in device driver. It represents an open file. Open file
 // is created in kernel space and passed to any function that operates on the file until close.
-
-// the difference between struct inode and struct file is that an inode does not track the current position
+// the difference between strict inode and struct file is that an inode does not track the current position
 // within the file or the current mode. It only contains stuff that helps the OS find the contents of the underlying file structure (pipe, directory, regular disk file, block/character device file)
 // struct file contains pointer to struct inode and also...
-
 // if read device file:
 // Block device : like device storage and memory. Data in block can be cached in memory and read back from cache. writes can be buffered
 // character device : like pipes, serial ports. Write and reading to them is an immediate action. Writing a byte to a character device might cause it to be displayed on screen, output on a serial port, converted into a sound, ... Reading a byte from a device might cause the serial port to wait for input, might return a random byte
-
 // if read regular file:
 // regular file like file exutable, text ... : the data is handled by a filesystem driver. 
 
-// Driver handles the operations and device file is the interface for communication (udev).
-
+// Driver is in the below and user can access driver through file device in file system.
+// Driver handles the operations and device file is the interface for communication.
 // To add permission for device file. this helps some group or user have the permission to do the operations on this device file and also protect file system
-// In /etc/udev/rules.d Add a rules for driver with KERNEL, SUBSYSTEM and MODE or the other priorities of device connected.
-/*****************************************************************the end***************************************************************************************/ 
-
+// In /etc/udev/rules.d Add a rules for driver with KERNEL, SUBSYSTEM and MODE 
 MODULE_LICENSE("GPL");              ///< The license type -- this affects runtime behavior
 MODULE_AUTHOR("PHAM Minh Thuc");      ///< The author -- visible when you use modinfo
 MODULE_DESCRIPTION("Simple driver replace arm ALD5");  ///< The description -- see modinfo
 MODULE_VERSION("0.1");              ///< The version of the module
 
-static char message[256] = {0};  /// Memory for the string that is passed from userspace
-static short size_of_message;    ///< Used to remember the size of the string stored
 static int numberOpens = 0;      // number of times the device opened
 static DEFINE_MUTEX(raspchar_mutex);         // macro to define mutex
 static int ret = 0;
@@ -146,8 +153,58 @@ int raspchar_hw_write_data(raspchar_dev_t *hw, loff_t start_reg, size_t num_regs
       hw->status_regs[WRITE_COUNT_H_REG] += 1;
    return write_bytes; 
 }
-/********************************** OS specific ***********************************/
 
+int rchar_hw_clear(raspchar_dev_t *hw)
+{
+   if((hw->control_regs[CONTROL_ACCESS_REG] & CTRL_WRITE_DATA_BIT) == DISABLE)
+      return -1;
+   memset(hw->data_regs, 0, NUM_DATA_REGS * REG_SIZE);
+   hw->status_regs[DEVICE_STATUS_REG] &= ~STS_DATAREGS_OVERFLOW_BIT;
+   return 0;
+}
+
+void rchar_hw_get_status(raspchar_dev_t *hw, sts_reg_t *status)
+{
+   memcpy(status, hw->status_regs, NUM_STS_REGS * REG_SIZE);
+}
+
+void vchar_hw_enable_read(raspchar_dev_t *hw, unsigned char isEnable)
+{
+   if(isEnable == ENABLE)
+   {
+      // Enable bit inform that data is ready read
+      hw->status_regs[DEVICE_STATUS_REG] |= STS_READ_ACCESS_BIT;
+      // Enable bit give the permit reading
+      hw->control_regs[CONTROL_ACCESS_REG] |= CTRL_READ_DATA_BIT;
+   }
+   else
+   {
+      // Disable bit inform that data is ready read
+      hw->status_regs[DEVICE_STATUS_REG] &= ~STS_READ_ACCESS_BIT;
+      // Disable bit give the permit reading
+      hw->control_regs[CONTROL_ACCESS_REG] &= ~CTRL_READ_DATA_BIT;
+   }
+}
+
+void vchar_hw_enable_write(raspchar_dev_t *hw, unsigned char isEnable)
+{
+   if(isEnable == ENABLE)
+   {
+      // Enable bit inform that data is ready written
+      hw->status_regs[DEVICE_STATUS_REG] |= STS_WRITE_ACCESS_BIT;
+      // Enable bit give the permit write
+      hw->control_regs[CONTROL_ACCESS_REG] |= CTRL_WRITE_DATA_BIT;
+   }
+   else
+   {
+      // Disable bit inform that data is ready written
+      hw->status_regs[DEVICE_STATUS_REG] &= ~STS_WRITE_ACCESS_BIT;
+      // Disable bit give the permit writing
+      hw->control_regs[CONTROL_ACCESS_REG] &= ~CTRL_WRITE_DATA_BIT;
+   }
+}
+
+/********************************** OS specific ***********************************/
 static ssize_t read_function(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
    char *kernel_buf = NULL;
@@ -187,6 +244,138 @@ static ssize_t write_function(struct file *file, const char __user *buf, size_t 
    return num_bytes;
 }
 
+static long ioctl_function(struct file *file, unsigned int cmd, unsigned long arg)
+{
+   unsigned char isReadEnable;
+   unsigned char isWriteEnable;
+   sts_reg_t status;
+   ret = 0;
+   printk(KERN_INFO "Handle event ioctl (cmd: %u)\n", cmd);
+   switch(cmd) {
+      case RCHAR_CLR_DATA_REGS:
+         ret = rchar_hw_clear(raspchar_drv.raspchar_hw);
+         if (ret < 0)
+            printk(KERN_INFO "Raspchar: Can not clear data on data registers");
+         else
+            printk(KERN_INFO "Raspchar: Data registers are cleared");
+         break;
+      case RCHAR_GET_STS_REGS:
+         rchar_hw_get_status(raspchar_drv.raspchar_hw,&status);
+         (void)copy_to_user((sts_reg_t*)arg, &status, sizeof(status));
+         printk(KERN_INFO "Raspchar: Got information status register");
+         break;
+      case RCHAR_RD_DATA_REGS: 
+         (void)copy_from_user(&isReadEnable, (unsigned char *)arg, sizeof(isReadEnable));
+         vchar_hw_enable_read(raspchar_drv.raspchar_hw,isReadEnable);
+         printk(KERN_INFO "Raspchar: changed permit of reading");
+         break;
+      case RCHAR_WR_DATA_REGS: 
+         (void)copy_from_user(&isWriteEnable, (unsigned char *)arg, sizeof(isWriteEnable));
+         vchar_hw_enable_write(raspchar_drv.raspchar_hw,isWriteEnable);
+         printk(KERN_INFO "Raspchar: changed permit of writing");
+         break;
+      default:
+         break;
+   }
+   return ret;
+}
+
+static void *raspchar_seq_start(struct seq_file *s, loff_t *off)
+{
+   char *msg = kmalloc(256, GFP_KERNEL);
+   if(msg == NULL)
+   {
+      printk(KERN_ERR "seq start: Can't allocate the memoire for seq file");
+      return NULL; 
+   }
+
+   sprintf(msg, "message(%lld): size(%zu), from(%zu), count(%zu), index(%lld), read_pos(%lld)", *off, s->size, s->from, s->count, s->index, s->read_pos);
+   printk(KERN_INFO "seq_start: *pos(%lld)", *off);
+   return msg;
+}
+
+static int raspchar_seq_show(struct seq_file *s, void *pdata)
+{
+   char *msg = pdata;
+   // write message to buffer of seq file
+   seq_printf(s, "%s\n", msg);
+   printk(KERN_INFO "seq_show: %s\n", msg);
+   return 0;
+}
+
+static void *raspchar_seq_next(struct seq_file *s, void *pdata, loff_t *off)
+{
+   char *msg = pdata;
+   ++*off; 
+   printk(KERN_INFO "seq_next: *pos(%lld)\n", *off);
+   sprintf(msg, "message(%lld): size(%zu), from(%zu), count(%zu), index(%lld), read_pos(%lld)", *off, s->size, s->from, s->count, s->index, s->read_pos);
+   return msg;
+}
+
+static void raspchar_seq_stop(struct seq_file *s, void *pdata)
+{
+   printk(KERN_INFO "seq_stop\n");
+   kfree(pdata);
+}
+
+static struct seq_operations seq_ops = {
+   .start = raspchar_seq_start,
+   .next = raspchar_seq_next,
+   .stop = raspchar_seq_stop,
+   .show = raspchar_seq_show
+};
+
+static int raspchar_proc_open(struct inode *inode, struct file *file)
+{
+   printk(KERN_INFO "Handle event open on proc file\n");
+   return seq_open(file, &seq_ops);
+}
+
+static int raspchar_proc_release(struct inode * inode, struct file *file)
+{
+   printk(KERN_INFO "Handle event close on proc file\n");
+   return seq_release(inode, file);   
+}
+
+static ssize_t raspchar_proc_read(struct file *file, char __user *buf, size_t count, loff_t *off)
+{
+   /**This is the code for read procfs in case we don't care about the case that if char driver return to user space a big reponse.
+    * For example if buffer of user is 1024 bytes but the reponse is 1050 bytes => error. So we need to use sequence file to devide the reponse into many reponse in sequence and return to user**/
+   /*
+   char tmp[256];
+   unsigned int idx = 0;
+   unsigned int count_read, count_write;
+   sts_reg_t status_reg;
+
+   printk(KERN_INFO "Handle event read on proc file from %lld and %zu bytes\n",*off,count);
+   if(*off > 0)
+      return 0;
+   rchar_hw_get_status(raspchar_drv.raspchar_hw,&status_reg);
+   count_read = status_reg.read_count_h_reg << 8 | status_reg.read_count_l_reg;
+   count_write = status_reg.write_count_h_reg << 8 | status_reg.write_count_l_reg;
+
+   idx += sprintf(tmp + idx, "Read_count: %u\n",count_read);
+   idx += sprintf(tmp + idx, "Write_count: %u\n",count_write);
+   idx += sprintf(tmp + idx, "device_status: 0x%02x\n",status_reg.device_status_reg);
+
+   copy_to_user(buf,tmp,idx);
+   *off += idx;
+   return idx;*/
+   printk(KERN_INFO "Hqndle reading event on proc file at %lld and %zu bytes",*off, count);
+   if (*off >= 131072) //user buffer of cat in user space is 131072 bytes
+      printk(KERN_INFO "Don't worry about the size of buffer user");
+   return seq_read(file, buf, count, off); 
+}
+
+
+/*
+static ssize_t raspchar_proc_write(struct file *file, const char __user *buf, size_t count, loff_t *off)
+{
+   printk(KERN_INFO "No action to handle writing event, procfs read-only\n");
+   return count;
+}
+*/
+
 static int  open_function(struct inode *inode, struct file *file)
 {
    if(!mutex_trylock(&raspchar_mutex))
@@ -211,7 +400,15 @@ static struct file_operations fops =
    read: read_function,
    write: write_function,
    open: open_function,
-   release: release_function
+   release: release_function,
+   unlocked_ioctl: ioctl_function
+};
+
+static struct file_operations proc_fs = {
+   .open = raspchar_proc_open,
+   .release = raspchar_proc_release,
+   .read = raspchar_proc_read,
+   //.write = raspchar_proc_write,
 };
 
 static int __init kernel_module_init(void)
@@ -259,6 +456,16 @@ static int __init kernel_module_init(void)
       unregister_chrdev(raspchar_drv.major,DEVICE_NAME);
       return ret;
    }
+   // Create proc file 
+   if(NULL == proc_create("raspchar_proc",0666,NULL,&proc_fs))
+   {
+      printk(KERN_ERR "Failed to create file in procfs\n");
+      raspchar_hw_exit(raspchar_drv.raspchar_hw);
+      kfree(raspchar_drv.raspchar_hw);
+      device_destroy(raspchar_drv.raspcharClass, MKDEV(raspchar_drv.major,0));
+      class_destroy(raspchar_drv.raspcharClass);
+      unregister_chrdev(raspchar_drv.major,DEVICE_NAME);
+   }
    printk(KERN_INFO "RaspChar: device class is created sucessfully\n");
 
    mutex_init(&raspchar_mutex);                 /// Initialize the mutex lock
@@ -267,14 +474,15 @@ static int __init kernel_module_init(void)
 
 static void __exit kernel_module_cleanup(void)
 {
+   printk(KERN_INFO "Raspchar: Exit raspchar driver");
+   remove_proc_entry("raspchar_proc",NULL);
    raspchar_hw_exit(raspchar_drv.raspchar_hw);                             // clear device physic
    kfree(raspchar_drv.raspchar_hw);                                        // free data structure
    device_destroy(raspchar_drv.raspcharClass, MKDEV(raspchar_drv.major,0)); //remove device
-   class_unregister(raspchar_drv.raspcharClass);               //unregister the device class
+   //class_unregister(raspchar_drv.raspcharClass);               //unregister the device class
    class_destroy(raspchar_drv.raspcharClass);                  //remove the device class
    unregister_chrdev(raspchar_drv.major,DEVICE_NAME);
    mutex_destroy(&raspchar_mutex);
-   printk(KERN_INFO "Exit raspchar driver");
 }
 
 module_init(kernel_module_init);
