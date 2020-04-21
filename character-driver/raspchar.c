@@ -19,8 +19,13 @@
 #include <linux/ioctl.h>            // Use for entry point ioctl
 #include <linux/proc_fs.h>           // create file system in /proc
 #include <linux/seq_file.h>
+#include <linux/interrupt.h>
+#include <linux/jiffies.h>
+#include <linux/timer.h>            // Support kernel timer
+#include <asm/irq_vectors.h>
 #include "raspchar.h"
 
+#define IRQ_NUMBER 11
 #define DEVICE_NAME "raspberrychar"
 #define CLASS_NAME  "rasp"
 #define MAGICAL_NUMBER 240
@@ -75,8 +80,14 @@ struct _raspchar_drv {
    struct class *raspcharClass;
    struct device *raspcharDevice;
    raspchar_dev_t *raspchar_hw;
+   volatile uint32_t intr_cnt;
+   struct timer_list raspchar_ktimer;
 } raspchar_drv;
 
+typedef struct raspchar_ktimer_data {
+   int param1;
+   int param2;
+} raspchar_ktimer_data_t;
 /********************************** Device specific***********************************/
 int raspchar_hw_init(raspchar_dev_t *hw)
 {
@@ -202,6 +213,16 @@ void vchar_hw_enable_write(raspchar_dev_t *hw, unsigned char isEnable)
       // Disable bit give the permit writing
       hw->control_regs[CONTROL_ACCESS_REG] &= ~CTRL_WRITE_DATA_BIT;
    }
+}
+
+// Function handle interrupt
+irqreturn_t raspchar_hw_isr(int irq, void *dev)
+{
+   /*Handle the stuff of top-half*/
+   raspchar_drv.intr_cnt++;
+   /*Handle the stuff of bottom-half*/
+
+   return IRQ_HANDLED;
 }
 
 /********************************** OS specific ***********************************/
@@ -411,6 +432,32 @@ static struct file_operations proc_fs = {
    //.write = raspchar_proc_write,
 };
 
+static void handle_timer(struct timer_list *ktimer)
+{
+   /*
+   if(!pdata) {
+      printk(KERN_ERR "can not handle a NULL pointer");
+      return;
+   }
+   // Handle data
+   ++pdata->param1;
+   --pdata->param2;
+   */
+   asm("int $0x38");
+   printk(KERN_INFO "[CPU %d] interrupt counter %d\n",smp_processor_id(), raspchar_drv.intr_cnt);
+   mod_timer(&raspchar_drv.raspchar_ktimer, jiffies + 10*HZ);
+}
+
+static void configure_timer(struct timer_list *ktimer)
+{
+   /*
+   static raspchar_ktimer_data_t data = {
+      .param1 = 0,
+      .param2 = 0
+   };*/
+   ktimer->expires = jiffies + 10*HZ;
+}
+
 static int __init kernel_module_init(void)
 {
    printk(KERN_INFO "Initializing the RaspberryChar LKM\n");
@@ -456,18 +503,33 @@ static int __init kernel_module_init(void)
       unregister_chrdev(raspchar_drv.major,DEVICE_NAME);
       return ret;
    }
+   ret = request_irq(IRQ_NUMBER, raspchar_hw_isr,IRQF_SHARED,"raspchar_dev",&raspchar_drv.raspcharDevice);
+   if (ret)
+   {
+      raspchar_hw_exit(raspchar_drv.raspchar_hw);
+      kfree(raspchar_drv.raspchar_hw);
+      device_destroy(raspchar_drv.raspcharClass, MKDEV(raspchar_drv.major,0));
+      class_destroy(raspchar_drv.raspcharClass);
+      unregister_chrdev(raspchar_drv.major,DEVICE_NAME);
+      printk(KERN_ERR "Failed to register IRQ\n");
+      return ret;
+   }
    // Create proc file 
    if(NULL == proc_create("raspchar_proc",0666,NULL,&proc_fs))
    {
       printk(KERN_ERR "Failed to create file in procfs\n");
+      free_irq(IRQ_NUMBER,&raspchar_drv.raspcharDevice);
       raspchar_hw_exit(raspchar_drv.raspchar_hw);
       kfree(raspchar_drv.raspchar_hw);
       device_destroy(raspchar_drv.raspcharClass, MKDEV(raspchar_drv.major,0));
       class_destroy(raspchar_drv.raspcharClass);
       unregister_chrdev(raspchar_drv.major,DEVICE_NAME);
    }
-   printk(KERN_INFO "RaspChar: device class is created sucessfully\n");
 
+   timer_setup(&raspchar_drv.raspchar_ktimer,handle_timer,TIMER_IRQSAFE);
+   configure_timer(&raspchar_drv.raspchar_ktimer);
+   add_timer(&raspchar_drv.raspchar_ktimer);
+   printk(KERN_INFO "RaspChar: device class is created sucessfully\n");
    mutex_init(&raspchar_mutex);                 /// Initialize the mutex lock
    return 0;
 }
@@ -475,7 +537,9 @@ static int __init kernel_module_init(void)
 static void __exit kernel_module_cleanup(void)
 {
    printk(KERN_INFO "Raspchar: Exit raspchar driver");
+   del_timer(&raspchar_drv.raspchar_ktimer);
    remove_proc_entry("raspchar_proc",NULL);
+   free_irq(IRQ_NUMBER,&raspchar_drv.raspcharDevice);
    raspchar_hw_exit(raspchar_drv.raspchar_hw);                             // clear device physic
    kfree(raspchar_drv.raspchar_hw);                                        // free data structure
    device_destroy(raspchar_drv.raspcharClass, MKDEV(raspchar_drv.major,0)); //remove device
