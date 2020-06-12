@@ -43,7 +43,7 @@ typedef struct {
 } sts_reg_t;
 
 // inode is the structure for file disk (fd). When we call open file system in user space, it return a fd.
-// struct file is tha data structure used in device driver. It represents an open file. Open file
+// struct file is the data structure used in device driver. It represents an open file. Open file
 // is created in kernel space and passed to any function that operates on the file until close.
 // the difference between strict inode and struct file is that an inode does not track the current position
 // within the file or the current mode. It only contains stuff that helps the OS find the contents of the underlying file structure (pipe, directory, regular disk file, block/character device file)
