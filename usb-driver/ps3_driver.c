@@ -2,6 +2,15 @@
 #include <linux/kernel.h>
 #include <linux/usb.h>
 
+// a device can have multiple interfaces
+// a interface bind to a driver specific
+// when we develope a driver usb, if a device is binded to a driver default in linux, we have 2 methods to bind device to new driver:
+// 1. rmmod driver actual
+// 2. unbind device to the driver: echo -n "3-3:1.0" > /sys/bus/usb/drivers/usbhid/unbind and then
+// echo -n "3-3:1.0" > /sys/bus/usb/drivers/ps3_driver/bind
+// to see info of device usb, easier: lsusb
+// or : cat /sys/kernel/debug/usb/devices
+
 static int ps3_probe(struct usb_interface *interface, const struct usb_device_id *id)
 {
     printk(KERN_INFO "ps3 drive (%04X:%04X) plugged\n", id->idVendor, id->idProduct);
